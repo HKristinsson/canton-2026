@@ -11,7 +11,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
 <title>Canton 140 · Reir</title>
-<script>window.__APPVER="fd77a46bf2";</script>
+<script>window.__APPVER="7f279dcb2c";</script>
 <script>/* Canton 140 – offline shim: local photos (IndexedDB), user name, export/import between phones */
 (function(){
   const USERS = ['Hilmar','Rannveig'];
@@ -168,6 +168,145 @@
       }).catch(()=>{});
     });
   }
+  window.__OFFI = { put, all, urls, me:()=>me, others:()=>others, setOther(u,st){ others[u]=Object.assign(others[u]||{}, {state:st, exported:new Date().toISOString()}); LS('cf.others',JSON.stringify(others)); }, paint:()=>paint() };
+})();
+
+/* Canton 140 – Supabase sync (offline-first). Local data is the source of truth; pushes when a connection is available. */
+(function(){
+  const SB = 'https://ljlfygkhezderifzlwia.supabase.co', KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxqbGZ5Z2toZXpkZXJpZnpsd2lhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE4MTQ2MDQsImV4cCI6MjEwNzM5MDYwNH0.JERibyIp7OWGoF00ZDDBZAThk6ca0EHD6hn6kA7t5ZM';
+  const LS = (k,v)=>{ try{ if(v===undefined) return localStorage.getItem(k); if(v===null) localStorage.removeItem(k); else localStorage.setItem(k,v); }catch(e){ return null; } };
+  const J = (k,d)=>{ try{ return JSON.parse(LS(k)||'') || d; }catch(e){ return d; } };
+  const esc = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  let sess = J('cf.sb', null);
+  let busy = false, lastOk = LS('cf.sb.last') || '', lastErr = '';
+
+  function tmo(ms){ const c=new AbortController(); setTimeout(()=>c.abort(), ms); return c.signal; }
+  async function call(path, opt={}, ms=20000){
+    const h = Object.assign({apikey: KEY}, opt.headers||{});
+    if(opt.auth!==false && sess) h.Authorization = 'Bearer '+sess.access_token;
+    const r = await fetch(SB+path, {method: opt.method||'GET', headers: h, body: opt.body, signal: tmo(ms)});
+    if(!r.ok){ let m=''; try{ const j=await r.json(); m=j.msg||j.message||j.error_description||j.error||''; }catch(e){} const err=new Error(m||('HTTP '+r.status)); err.status=r.status; throw err; }
+    return r;
+  }
+  function saveSess(j){ sess = {access_token:j.access_token, refresh_token:j.refresh_token, expires_at: Date.now()+((j.expires_in||3600)-60)*1000, user:{id:j.user.id, email:j.user.email}}; LS('cf.sb', JSON.stringify(sess)); }
+  async function ensureToken(){
+    if(!sess) throw new Error('Ekki innskráður');
+    if(Date.now() < sess.expires_at) return;
+    const r = await call('/auth/v1/token?grant_type=refresh_token', {method:'POST', auth:false, headers:{'Content-Type':'application/json'}, body: JSON.stringify({refresh_token: sess.refresh_token})});
+    saveSess(await r.json());
+  }
+  async function login(email, pw){
+    const r = await call('/auth/v1/token?grant_type=password', {method:'POST', auth:false, headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, password:pw})});
+    saveSess(await r.json());
+  }
+  async function signup(email, pw){
+    const r = await call('/auth/v1/signup', {method:'POST', auth:false, headers:{'Content-Type':'application/json'}, body: JSON.stringify({email, password:pw})});
+    const j = await r.json();
+    if(j.access_token){ saveSess(j); return 'in'; }
+    return 'confirm';
+  }
+
+  function localState(){ return J('cf.state', {}); }
+  function names(){ const n={}; try{ JSON.parse(document.getElementById('data').textContent).forEach(d=>n[d.id]=[d.company_en,(d.booth||'').split(/[;,·]/)[0].trim()]); }catch(e){} return n; }
+
+  async function sync(manual){
+    const I = window.__OFFI; if(!I || busy) return;
+    if(!sess){ render(); return; }
+    if(!navigator.onLine && !manual){ render(); return; }
+    busy = true; lastErr=''; render('Samstilli…');
+    try{
+      await ensureToken();
+      const uid = sess.user.id, me = I.me() || sess.user.email;
+      // 1) photos (own, not yet uploaded)
+      const ph = await I.all(); let upN=0;
+      for(const [id,rec] of Object.entries(ph)){
+        if(rec.up || (rec.by && rec.by!==I.me())) continue;
+        await call('/storage/v1/object/photos/'+uid+'/'+encodeURIComponent(id)+'.jpg', {method:'POST', headers:{'Content-Type': rec.blob.type||'image/jpeg', 'x-upsert':'true'}, body: rec.blob}, 60000);
+        rec.up = true; await I.put(id, rec); upN++;
+        render('Sendi myndir… '+upN);
+      }
+      // 2) visits changed since last push
+      const st = localState(), pushed = J('cf.sb.pushed', {}), nm = names();
+      const rows = Object.entries(st).filter(([id,s])=> s.t && s.t !== pushed[id]).map(([id,s])=>({
+        supplier_id:id, user_id:uid, user_name:me, supplier_name:(nm[id]||[])[0]||null, booth:(nm[id]||[])[1]||null,
+        status:s.s||'', note:s.n||'', answers:s.a||{}, booth_override:s.ob||'', day_override:s.od||'', photos:(s.p||[]), updated_at:s.t }));
+      if(rows.length){
+        await call('/rest/v1/visits?on_conflict=supplier_id,user_id', {method:'POST', headers:{'Content-Type':'application/json', Prefer:'resolution=merge-duplicates,return=minimal'}, body: JSON.stringify(rows)});
+        rows.forEach(r=>pushed[r.supplier_id]=r.updated_at); LS('cf.sb.pushed', JSON.stringify(pushed));
+      }
+      // 3) pull everyone's rows
+      const r = await call('/rest/v1/visits?select=*');
+      const all = await r.json();
+      const byUser = {}; let ownChanged=false;
+      for(const v of all){
+        const s = {s:v.status, n:v.note, a:v.answers||{}, ob:v.booth_override, od:v.day_override, p:v.photos||[], t:v.updated_at};
+        if(v.user_id===uid){
+          // restore on a fresh/reinstalled phone: take server row only if newer than local
+          if(!st[v.supplier_id] || (st[v.supplier_id].t||'') < (v.updated_at||'')){ st[v.supplier_id]=s; pushed[v.supplier_id]=v.updated_at; ownChanged=true; }
+        } else {
+          (byUser[v.user_name] = byUser[v.user_name] || {})[v.supplier_id] = s;
+          for(const pid of s.p){ if(!I.urls[pid]){ try{ const b = await (await call('/storage/v1/object/authenticated/photos/'+v.user_id+'/'+encodeURIComponent(pid)+'.jpg', {}, 60000)).blob(); await I.put(pid,{blob:b, by:v.user_name, up:true}); I.urls[pid]=URL.createObjectURL(b); }catch(e){} } }
+        }
+      }
+      if(ownChanged){ LS('cf.state', JSON.stringify(st)); LS('cf.sb.pushed', JSON.stringify(pushed)); }
+      for(const [u,s] of Object.entries(byUser)) I.setOther(u, s);
+      // own photos missing locally (restore)
+      for(const v of all.filter(v=>v.user_id===uid)) for(const pid of (v.photos||[])){ if(!I.urls[pid]){ try{ const b = await (await call('/storage/v1/object/authenticated/photos/'+uid+'/'+encodeURIComponent(pid)+'.jpg', {}, 60000)).blob(); await I.put(pid,{blob:b, by:I.me(), up:true}); I.urls[pid]=URL.createObjectURL(b); }catch(e){} } }
+      lastOk = new Date().toISOString(); LS('cf.sb.last', lastOk);
+      I.paint(); window.__rr && window.__rr();
+      if(ownChanged) setTimeout(()=>location.reload(), 300);
+    }catch(e){
+      lastErr = e.name==='AbortError' ? 'Ekkert samband við gagnagrunninn (tími rann út)' : (e.status===401||e.status===403 ? 'Aðgangi hafnað – er netfangið skráð í teymið?' : (e.message||'villa'));
+      if(e.status===400 && /refresh/i.test(e.message||'')){ sess=null; LS('cf.sb', null); }
+    }finally{ busy=false; render(); }
+  }
+
+  async function pending(){
+    const I = window.__OFFI; if(!I) return {v:0,p:0};
+    const st = localState(), pushed = J('cf.sb.pushed', {});
+    const v = Object.entries(st).filter(([id,s])=>s.t && s.t!==pushed[id]).length;
+    let p=0; try{ const ph=await I.all(); p=Object.values(ph).filter(r=>!r.up && (!r.by || r.by===I.me())).length; }catch(e){}
+    return {v,p};
+  }
+  function fmt(t){ if(!t) return 'aldrei'; const d=new Date(t); return d.getDate()+'.'+(d.getMonth()+1)+'. kl. '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
+
+  async function render(msg){
+    const host = document.getElementById('p-check'); if(!host) return;
+    let box = document.getElementById('syncpanel');
+    if(!box){ box=document.createElement('div'); box.id='syncpanel'; box.className='offpanel'; const op=document.getElementById('offpanel'); host.insertBefore(box, op? op.nextSibling : host.firstChild); }
+    const q = await pending();
+    const head = document.getElementById('synctxt');
+    if(head){ const me=(window.__OFFI&&window.__OFFI.me())||''; head.textContent = (q.v||q.p) ? ('Offline · '+me+' · '+(q.v+q.p)+' bíða') : (sess ? me+' · samstillt' : 'Offline · '+me); }
+    if(!sess){
+      box.innerHTML = '<h2>Samstilling við gagnagrunn</h2><p>Skráðu þig inn einu sinni (á Íslandi). Eftir það sendist allt sjálfkrafa þegar síminn nær sambandi – og þið sjáið gögn hvors annars.</p>'+
+        '<div style="display:grid;gap:6px;margin-top:8px"><input id="sbmail" type="email" autocomplete="username" placeholder="Netfang" style="font:inherit;padding:9px;border:1px solid var(--line);border-radius:8px"><input id="sbpw" type="password" autocomplete="current-password" placeholder="Lykilorð (minnst 8 stafir)" style="font:inherit;padding:9px;border:1px solid var(--line);border-radius:8px"></div>'+
+        '<div class="acts"><button class="btn pri" data-sb="login">Skrá inn</button><button class="btn" data-sb="signup">Nýskrá (fyrsta sinn)</button></div><div id="sbmsg" class="note" style="margin-top:6px">'+esc(msg||lastErr||'')+'</div>';
+      return;
+    }
+    box.innerHTML = '<h2>Samstilling við gagnagrunn</h2><p>Innskráð(ur): <b>'+esc(sess.user.email)+'</b><br>Síðast samstillt: <b>'+fmt(lastOk)+'</b><br>Bíða sendingar: <b>'+q.v+'</b> birgjar, <b>'+q.p+'</b> myndir.</p>'+
+      (lastErr?'<p class="note" style="color:var(--red)">'+esc(lastErr)+'</p>':'')+
+      '<div class="acts"><button class="btn pri" data-sb="sync"'+(busy?' disabled':'')+'>'+(busy?esc(msg||'Samstilli…'):'Samstilla núna')+'</button><button class="btn" data-sb="logout">Skrá út</button></div>'+
+      '<p class="note" style="margin-top:6px">Allt er alltaf vistað fyrst í símanum. Ef ekkert samband næst í Kína sendist það þegar þið eruð komin í reiki/eSIM eða heim.</p>';
+  }
+
+  document.addEventListener('click', async e=>{
+    const b = e.target.closest && e.target.closest('[data-sb]'); if(!b) return;
+    const a = b.dataset.sb;
+    if(a==='sync') return sync(true);
+    if(a==='logout'){ if(confirm('Skrá út? Gögnin í símanum haldast.')){ sess=null; LS('cf.sb', null); render(); } return; }
+    const em = (document.getElementById('sbmail').value||'').trim(), pw = document.getElementById('sbpw').value||'';
+    const m = document.getElementById('sbmsg');
+    if(!em || pw.length<8){ m.textContent='Sláðu inn netfang og lykilorð (minnst 8 stafir).'; return; }
+    m.textContent='Augnablik…';
+    try{
+      if(a==='login'){ await login(em,pw); render(); sync(true); }
+      else { const r = await signup(em,pw); if(r==='in'){ render(); sync(true); } else m.textContent='Staðfestingarpóstur var sendur á '+em+'. Smelltu á hlekkinn í póstinum og komdu svo aftur og veldu „Skrá inn“.'; }
+    }catch(err){ m.textContent = err.name==='AbortError' ? 'Ekkert samband.' : (/confirm/i.test(err.message||'') ? 'Netfang ekki staðfest – smelltu á hlekkinn í staðfestingarpóstinum.' : /invalid/i.test(err.message||'') ? 'Rangt netfang eða lykilorð.' : (err.message||'Villa')); }
+  });
+
+  window.addEventListener('online', ()=>sync());
+  document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible') sync(); });
+  window.addEventListener('DOMContentLoaded', ()=>{ setTimeout(()=>{ render(); sync(); }, 1200); setInterval(()=>sync(), 120000); setInterval(()=>{ if(!busy) render(); }, 15000); });
 })();
 </script>
 </head><body>
