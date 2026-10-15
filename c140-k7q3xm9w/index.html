@@ -206,7 +206,7 @@
   }
 
   function localState(){ return J('cf.state', {}); }
-  function names(){ const n={}; try{ JSON.parse(document.getElementById('data').textContent).forEach(d=>n[d.id]=[d.company_en,(d.booth||'').split(/[;,·]/)[0].trim()]); }catch(e){} return n; }
+  function names(){ const n={}; try{ JSON.parse(document.getElementById('data').textContent).forEach(d=>n[d.id]=[d.company_en,(d.booth||'').split(/[;,·]/)[0].trim()]); }catch(e){} try{ Object.values(JSON.parse(localStorage.getItem('cf.custom')||'{}')).forEach(m=>n[m.id]=[m.name,m.booth||'']); }catch(e){} return n; }
 
   async function sync(manual){
     const I = window.__OFFI; if(!I || busy) return;
@@ -228,7 +228,7 @@
       const st = localState(), pushed = J('cf.sb.pushed', {}), nm = names();
       const rows = Object.entries(st).filter(([id,s])=> s.t && s.t !== pushed[id]).map(([id,s])=>({
         supplier_id:id, user_id:uid, user_name:me, supplier_name:(nm[id]||[])[0]||null, booth:(nm[id]||[])[1]||null,
-        status:s.s||'', note:s.n||'', answers:s.a||{}, booth_override:s.ob||'', day_override:s.od||'', photos:(s.p||[]), updated_at:s.t }));
+        status:s.s||'', note:s.n||'', answers: (id.startsWith('x-') && window.__customMeta && window.__customMeta(id)) ? Object.assign({}, s.a||{}, {_m: window.__customMeta(id)}) : (s.a||{}), booth_override:s.ob||'', day_override:s.od||'', photos:(s.p||[]), updated_at:s.t }));
       if(rows.length){
         await call('/rest/v1/visits?on_conflict=supplier_id,user_id', {method:'POST', headers:{'Content-Type':'application/json', Prefer:'resolution=merge-duplicates,return=minimal'}, body: JSON.stringify(rows)});
         rows.forEach(r=>pushed[r.supplier_id]=r.updated_at); LS('cf.sb.pushed', JSON.stringify(pushed));
@@ -237,8 +237,11 @@
       const r = await call('/rest/v1/visits?select=*');
       const all = await r.json();
       const byUser = {}; let ownChanged=false;
+      let newCust=0;
       for(const v of all){
-        const s = {s:v.status, n:v.note, a:v.answers||{}, ob:v.booth_override, od:v.day_override, p:v.photos||[], t:v.updated_at};
+        if(v.answers && v.answers._m && window.__addCustom){ if(window.__addCustom(v.answers._m, true)) newCust++; }
+        const aa=Object.assign({}, v.answers||{}); delete aa._m;
+        const s = {s:v.status, n:v.note, a:aa, ob:v.booth_override, od:v.day_override, p:v.photos||[], t:v.updated_at};
         if(v.user_id===uid){
           // restore on a fresh/reinstalled phone: take server row only if newer than local
           if(!st[v.supplier_id] || (st[v.supplier_id].t||'') < (v.updated_at||'')){ st[v.supplier_id]=s; pushed[v.supplier_id]=v.updated_at; ownChanged=true; }
@@ -253,7 +256,7 @@
       for(const v of all.filter(v=>v.user_id===uid)) for(const pid of (v.photos||[])){ if(!I.urls[pid]){ try{ const b = await (await call('/storage/v1/object/authenticated/photos/'+uid+'/'+encodeURIComponent(pid)+'.jpg', {}, 60000)).blob(); await I.put(pid,{blob:b, by:I.me(), up:true}); I.urls[pid]=URL.createObjectURL(b); }catch(e){} } }
       lastOk = new Date().toISOString(); LS('cf.sb.last', lastOk);
       I.paint(); window.__rr && window.__rr();
-      if(ownChanged) setTimeout(()=>location.reload(), 300);
+      if(ownChanged || newCust) setTimeout(()=>location.reload(), 300);
     }catch(e){
       lastErr = e.name==='AbortError' ? 'Ekkert samband við gagnagrunninn (tími rann út)' : (e.status===401||e.status===403 ? 'Aðgangi hafnað – er netfangið skráð í teymið?' : (e.message||'villa'));
       if(e.status===400 && /refresh/i.test(e.message||'')){ sess=null; LS('cf.sb', null); }
@@ -660,7 +663,7 @@ details.mapdet .mapbox{border:0;border-top:1px solid var(--line);border-radius:0
 <script>
 (function(){
 const DATA = JSON.parse(document.getElementById('data').textContent);
-const CATS = {A:'Mót & krossviður',B:'Klæðning & ál',C:'Hurðir, gluggar, innréttingar',D:'Geymsluhólf',E:'Loftdúkur & lýsing',F:'Kranar & pallar',G:'Krókheysisgámar',H:'Rafmagnstöflur',I:'Rafsendibílar',J:'Öryggisbúnaður & fatnaður',K:'Gólfhiti & lagnaefni',L:'Gólfefni & steinn',M:'Gluggatjöld & rúllugardínur',N:'Gaman að skoða'};
+const CATS = {A:'Mót & krossviður',B:'Klæðning & ál',C:'Hurðir, gluggar, innréttingar',D:'Geymsluhólf',E:'Loftdúkur & lýsing',F:'Kranar & pallar',G:'Krókheysisgámar',H:'Rafmagnstöflur',I:'Rafsendibílar',J:'Öryggisbúnaður & fatnaður',K:'Gólfhiti & lagnaefni',L:'Gólfefni & steinn',M:'Gluggatjöld & rúllugardínur',N:'Gaman að skoða',X:'Nýtt á sýningu'};
 const DAYS = [
   {k:'16',b:'16',s:'Fös · P1',t:'Föstudagur 16. okt · Phase 1',d:'Vélar í sal 4.0, rafbílar í 8.1 og útisvæði 12.0/13.0. Byrjið á krönum og mastursklifurpöllum.'},
   {k:'17',b:'17',s:'Lau · P1',t:'Laugardagur 17. okt · Phase 1',d:'Rafmagnssalir 14.3–16.3: töflur, sjálfvör og RCBO. Lýsing í 15.4.'},
@@ -671,7 +674,28 @@ const DAYS = [
   {k:'24',b:'24',s:'Lau · P2',t:'Laugardagur 24. okt · Phase 2',d:'Salur 12: hurðir, brunahurðir, gluggar, ál og mótakrossviður.'},
   {k:'25',b:'25',s:'Sun · P2',t:'Sunnudagur 25. okt · Phase 2',d:'Salur 13: mót, vinnupallar, ACP, innréttingar (Oppein, Suofeiya, YEKALON) og gólfefni í 13.2 (flísar, steinn, parket). Langur dagur; forgangsraðið A og B. Heimferð 26.'}
 ];
+const DAYPH0={'16':1,'17':1,'18':1,'19':1,'23':2,'24':2,'25':2};
+function customObj(m){
+  const b=String(m.booth||'').toUpperCase().replace(/\s+/g,'');
+  const k=/^(\d+)\.(\d)([A-Z])(\d+)/.exec(b); const h=k?+k[1]:99;
+  const ph = DAYPH0[m.day] || (k? (m.phase||null) : null);
+  return {id:m.id, _custom:true, cat:m.cat||'X', company_en:m.name, company_cn:'', is:m.desc||'Bætt við á sýningunni.', products:m.desc||'', priority:m.prio||'A',
+    status: b? 'opinbert':'ekki', booth:b, booth_hist:'', phase:ph, day:m.day||null, area: h<=8?'A':h<=13?'B':h<=16?'C':'D',
+    sortkey: k?[+k[1],+k[2],k[3],+k[4]]:[99,0,'',0], eu:{l:'na',t:'Bætt við á sýningunni af '+(m.by||'?')+'. Biðjið um DoC, prófunarskýrslur (númer, rannsóknastofa, gerð) og viðskiptaleyfi.',r:'Fer eftir vöru: CE-samræmisyfirlýsing og prófunar-/flokkunarskýrslur frá tilkynntum aðila fyrir nákvæmlega þessa gerð.'},
+    booth_questions:["Are you the manufacturer? Business licence and exact factory address?","EU documents for this exact product: test/classification report numbers, lab, CE DoC?","Price EXW/FOB, MOQ, lead time, samples?","Export references in EU/Nordics?"],
+    manufacturer_evidence:'', factory_city:'', website:'', contact:m.contact||'', notes:'Bætt við á staðnum af '+(m.by||'?')+' '+(m.t||'').slice(0,10)+'.', sources:[], gd:false, confidence:'' };
+}
+function loadCustom(){ try{ return JSON.parse(localStorage.getItem('cf.custom')||'{}'); }catch(e){ return {}; } }
+for(const m of Object.values(loadCustom())) DATA.push(customObj(m));
 const byId = Object.fromEntries(DATA.map(d=>[d.id,d]));
+window.__customMeta = id => loadCustom()[id] || null;
+window.__addCustom = (m, quiet) => {
+  const all=loadCustom(); const had=!!all[m.id]; all[m.id]=Object.assign({}, all[m.id]||{}, m);
+  try{ localStorage.setItem('cf.custom', JSON.stringify(all)); }catch(e){}
+  const o=customObj(all[m.id]); const i=DATA.findIndex(d=>d.id===m.id);
+  if(i>=0) DATA[i]=o; else DATA.push(o); byId[m.id]=o;
+  if(!quiet) rerender(); return !had;
+};
 let state = {};        // id -> {s:'v'|'x'|'', n:''}
 let db = null, open = new Set();
 let curDay = '16';
@@ -681,6 +705,7 @@ try{ state = JSON.parse(localStorage.getItem('cf.state')||'{}'); }catch(e){}
 const $ = s=>document.querySelector(s);
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 function statusTag(d){
+  if(d._custom) return '<span class="tag warn">＋ Bætt við á staðnum'+(d.day?' · í leið '+d.day+'. okt':'')+'</span>';
   if(d._ov) return '<span class="tag ok">Staðfest af þér · P'+d.phase+' · í leið '+d.day+'. okt</span>';
   if(d.status==='opinbert'){
     if(d.phase===3) return '<span class="tag warn">Aðeins Phase 3</span>';
@@ -765,6 +790,7 @@ function detail(d, st){
   if(d.sources && d.sources.length){
     h+='<details class="src"><summary class="note">Heimildir ('+d.sources.length+')</summary>'+d.sources.map(u=>'<a href="'+esc(u)+'" target="_blank" rel="noopener">'+esc(u.replace(/^https?:\/\//,'').slice(0,80))+'</a>').join('')+'</details>';
   }
+  if(d._custom){ const a=h.indexOf('<div><h4>Myndir</h4>'), b0=h.indexOf('<div><h4>Glósur á staðnum</h4>'); if(a>0&&b0>a){ const b=h.indexOf('</div></div>',b0)+12; const seg=h.slice(a,b); h=h.slice(0,a)+h.slice(b); h=h.replace('<div class="detail">','<div class="detail">'+seg); } }
   return h+'</div>';
 }
 function linkify(s){
@@ -864,6 +890,54 @@ document.addEventListener('click', e=>{
 });
 document.addEventListener('keydown', e=>{ const t=e.target.closest('[data-toggle]'); if(t && (e.key==='Enter'||e.key===' ') && e.target===t){ e.preventDefault(); t.click(); }});
 $('#q').addEventListener('input', ()=>renderAll());
+
+// ---- ＋ Nýr birgir (added on site) ----
+(function(){
+  const css=document.createElement('style');
+  css.textContent='.fab{position:fixed;right:16px;bottom:calc(env(safe-area-inset-bottom,0px) + 18px);z-index:40;background:var(--accent);color:var(--accent-ink);border:0;border-radius:999px;padding:13px 18px;font-weight:800;font-size:16px;box-shadow:0 4px 14px rgba(0,0,0,.25)}'+
+   '.nf{position:fixed;inset:0;z-index:95;background:rgba(0,0,0,.55);display:grid;align-items:end}'+
+   '.nf form{background:var(--bg);border-radius:16px 16px 0 0;padding:16px 16px calc(env(safe-area-inset-bottom,0px) + 16px);display:grid;gap:9px;max-height:92vh;overflow:auto}'+
+   '.nf h2{margin:0;font-size:20px} .nf label{display:grid;gap:3px;font-size:13px;color:var(--muted);font-weight:600}'+
+   '.nf input,.nf select,.nf textarea{font:inherit;font-size:16px;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink)}'+
+   '.nf .row2{display:grid;grid-template-columns:1fr 1fr;gap:8px} .nf .acts{display:flex;gap:8px;margin-top:4px} .nf .acts .btn{flex:1;padding:12px;font-size:16px}';
+  document.head.appendChild(css);
+  const fab=document.createElement('button'); fab.className='fab'; fab.type='button'; fab.textContent='＋ Nýr birgir'; fab.setAttribute('data-newsup','1');
+  document.body.appendChild(fab);
+  function today(){ const d=new Date(); const k=String(d.getDate()); return (d.getMonth()===9 && DAYPH0[k])? k : ''; }
+  function openForm(){
+    const w=document.createElement('div'); w.className='nf';
+    const dayOpts=[['','Enginn dagur / utan sýningar'],['16','16. okt (P1)'],['17','17. okt (P1)'],['18','18. okt (P1)'],['19','19. okt (P1)'],['23','23. okt (P2)'],['24','24. okt (P2)'],['25','25. okt (P2)']];
+    const td=today();
+    w.innerHTML='<form autocomplete="off"><h2>Nýr birgir</h2>'+
+      '<label>Nafn fyrirtækis *<input name="name" required placeholder="t.d. Foshan XYZ Aluminium"></label>'+
+      '<div class="row2"><label>Bás<input name="booth" placeholder="12.1K38" autocapitalize="characters"></label>'+
+      '<label>Dagur<select name="day">'+dayOpts.map(([k,v])=>'<option value="'+k+'"'+(k===td?' selected':'')+'>'+v+'</option>').join('')+'</select></label></div>'+
+      '<label>Flokkur<select name="cat">'+Object.entries(CATS).map(([k,v])=>'<option value="'+k+'"'+(k==='X'?' selected':'')+'>'+esc(v)+'</option>').join('')+'</select></label>'+
+      '<label>Hvað selja þau?<input name="desc" placeholder="t.d. álgluggar með brotinni kuldabrú"></label>'+
+      '<div class="row2"><label>Tengiliður / WeChat<input name="contact" placeholder="nafn, sími, WeChat"></label>'+
+      '<label>Forgangur<select name="prio"><option>A</option><option selected>B</option><option>C</option></select></label></div>'+
+      '<div class="acts"><button type="button" class="btn" data-nfx>Hætta við</button><button type="submit" class="btn pri">Vista og opna</button></div>'+
+      '<p class="note" style="margin:0">Eftir vistun opnast spjaldið: taktu myndir og skrifaðu glósur þar. Birgirinn birtist líka í síma hins þegar samstillt er.</p></form>';
+    document.body.appendChild(w);
+    setTimeout(()=>w.querySelector('[name=name]').focus(),50);
+    w.addEventListener('click',e=>{ if(e.target===w || e.target.closest('[data-nfx]')) w.remove(); });
+    w.querySelector('form').addEventListener('submit',e=>{
+      e.preventDefault(); const f=new FormData(e.target); const name=(f.get('name')||'').trim(); if(!name) return;
+      let me=''; try{ me=(window.__OFFI&&window.__OFFI.me())||localStorage.getItem('cf.user')||''; }catch(x){}
+      const id='x-'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+      const m={id,name,booth:(f.get('booth')||'').trim().toUpperCase().replace(/\s+/g,''),day:f.get('day')||'',cat:f.get('cat')||'X',desc:(f.get('desc')||'').trim(),contact:(f.get('contact')||'').trim(),prio:f.get('prio')||'B',by:me,t:new Date().toISOString()};
+      window.__addCustom(m,true); w.remove();
+      open.add(id); setState(id,{s:'v'});
+      // show it: route tab if it has a day, else all-suppliers search
+      const goRoute = !!m.day; const tb=document.getElementById(goRoute?'t-route':'t-all');
+      if(goRoute){ curDay=m.day; try{localStorage.setItem('cf.day2',curDay)}catch(x){} }
+      tb.click();
+      if(!goRoute){ $('#q').value=name; renderAll(); }
+      setTimeout(()=>{ const c=document.querySelector('[data-id="'+id+'"]'); if(c){ const hh=(document.querySelector('header.top')||{offsetHeight:0}).offsetHeight; window.scrollTo(0, c.getBoundingClientRect().top+window.scrollY-hh-8); c.classList.add('flash'); } },150);
+    });
+  }
+  document.addEventListener('click',e=>{ if(e.target.closest && e.target.closest('[data-newsup]')) openForm(); });
+})();
 
 const timers={};
 document.addEventListener('input', e=>{
