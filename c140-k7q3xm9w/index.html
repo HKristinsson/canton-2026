@@ -99,15 +99,14 @@
   function counts(){ let st={}; try{ st=JSON.parse(LS('cf.state')||'{}'); }catch(e){} const v=Object.values(st); return {v:v.filter(x=>x.s==='v').length, n:v.filter(x=>x.n).length, p:v.reduce((a,x)=>a+((x.p||[]).length),0)}; }
 
   function paint(){
-    const t=document.getElementById('synctxt'); if(t) t.textContent='Offline · '+(me||'?');
-    const dot=document.getElementById('syncdot'); if(dot) dot.classList.add('on');
+    if(window.__sbr) setTimeout(window.__sbr,0); else { const t=document.getElementById('synctxt'); if(t) t.textContent=(me||'?'); }
     let p=document.getElementById('offpanel');
     const host=document.getElementById('p-check'); if(!host) return;
     if(!p){ p=document.createElement('div'); p.id='offpanel'; p.className='offpanel'; host.insertBefore(p, host.firstChild); }
     const c=counts();
     const oth=Object.entries(others).map(([u,o])=>esc(u)+' (gögn frá '+fmt(o.exported)+')').join(', ');
     p.innerHTML='<h2>Gögnin í þessum síma</h2><p>Notandi: <b>'+esc(me||'—')+'</b> · '+c.v+' heimsótt · '+c.n+' athugasemdir · '+c.p+' myndir.'+(oth?'<br>Lesið inn frá: '+oth:'')+'</p>'+
-      '<p class="note">Allt vistast aðeins í símanum. Flytjið út á hverju kvöldi og sendið hvort öðru (AirDrop virkar án nets) og Hilmari/Claude þegar samband næst. Ef appinu er eytt af heimaskjánum glatast gögnin.</p>'+
+      '<p class="note">Allt vistast fyrst í símanum og sendist sjálfkrafa í sameiginlega gagnagrunninn þegar þú ert innskráð(ur) og síminn nær sambandi. Þá sjást glósur og myndir í hinum símanum líka. Útflutningur hér er bara varaleið.</p>'+
       '<div class="acts"><button class="btn pri" data-exp="1">Flytja út með myndum</button><button class="btn" data-exp="0">Flytja út án mynda</button><span class="btn filebtn">Lesa inn skrá<input type="file" accept=".json,application/json" id="impfile"></span><button class="btn" data-chuser>Skipta um notanda</button></div><div id="offmsg"></div>';
   }
 
@@ -270,13 +269,14 @@
   }
   function fmt(t){ if(!t) return 'aldrei'; const d=new Date(t); return d.getDate()+'.'+(d.getMonth()+1)+'. kl. '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
 
+  window.__sbr=()=>render();
   async function render(msg){
     const host = document.getElementById('p-check'); if(!host) return;
     let box = document.getElementById('syncpanel');
     if(!box){ box=document.createElement('div'); box.id='syncpanel'; box.className='offpanel'; const op=document.getElementById('offpanel'); host.insertBefore(box, op? op.nextSibling : host.firstChild); }
     const q = await pending();
     const head = document.getElementById('synctxt');
-    if(head){ const me=(window.__OFFI&&window.__OFFI.me())||''; head.textContent = (q.v||q.p) ? ('Offline · '+me+' · '+(q.v+q.p)+' bíða') : (sess ? me+' · samstillt' : 'Offline · '+me); }
+    if(head){ const me=(window.__OFFI&&window.__OFFI.me())||''; head.textContent = !sess ? (me+' · ekki innskráð – deilist ekki (smella)') : (q.v||q.p) ? (me+' · '+(q.v+q.p)+' bíða sendingar') : (me+' · ✓ samstillt'); const dt=document.getElementById('syncdot'); if(dt){ dt.classList.toggle('on', !!sess && !(q.v||q.p)); dt.style.background = sess ? '' : 'var(--red)'; } }
     if(!sess){
       box.innerHTML = '<h2>Samstilling við gagnagrunn</h2><p>Skráðu þig inn einu sinni (á Íslandi). Eftir það sendist allt sjálfkrafa þegar síminn nær sambandi – og þið sjáið gögn hvors annars.</p>'+
         '<div style="display:grid;gap:6px;margin-top:8px"><input id="sbmail" type="email" autocomplete="username" placeholder="Netfang" style="font:inherit;padding:9px;border:1px solid var(--line);border-radius:8px"><input id="sbpw" type="password" autocomplete="current-password" placeholder="Lykilorð (minnst 8 stafir)" style="font:inherit;padding:9px;border:1px solid var(--line);border-radius:8px"></div>'+
@@ -306,7 +306,46 @@
 
   window.addEventListener('online', ()=>sync());
   document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible') sync(); });
-  window.addEventListener('DOMContentLoaded', ()=>{ setTimeout(()=>{ render(); sync(); }, 1200); setInterval(()=>sync(), 120000); setInterval(()=>{ if(!busy) render(); }, 15000); });
+  window.addEventListener('DOMContentLoaded', ()=>{ setTimeout(()=>{ render(); sync(); loginPrompt(); }, 1200); setInterval(()=>sync(), 30000); setInterval(()=>{ if(!busy) render(); }, 10000); });
+  // sync soon after a local change (note, photo, answer)
+  let lastSt = LS('cf.state')||'';
+  setInterval(()=>{ const cur=LS('cf.state')||''; if(cur!==lastSt){ lastSt=cur; if(sess) setTimeout(()=>sync(), 3000); } }, 4000);
+  document.addEventListener('click', e=>{ if(e.target.closest && e.target.closest('#sync') && !sess) loginPrompt(true); });
+
+  function loginPrompt(force){
+    if(sess) return;
+    if(!force && LS('cf.sb.later') && Date.now()-Number(LS('cf.sb.later'))<6*3600e3) return;
+    if(!(window.__OFFI&&window.__OFFI.me())){ setTimeout(()=>loginPrompt(force), 1500); return; }
+    if(document.getElementById('sbmodal')) return;
+    const w=document.createElement('div'); w.className='who'; w.id='sbmodal';
+    const inp='font:inherit;font-size:17px;padding:11px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink)';
+    w.innerHTML='<div><h2>Skráðu þig inn til að deila</h2><p>Glósur, svör og myndir sjást aðeins í þessum síma þar til þú skráir þig inn. Eftir innskráningu sendist allt sjálfkrafa og birtist í hinum símanum líka.</p>'+
+      '<div style="display:grid;gap:8px;margin-top:10px"><input id="mmail" type="email" autocomplete="username" placeholder="Netfang (t.d. nafn@reir.is)" style="'+inp+'"><input id="mpw" type="password" autocomplete="current-password" placeholder="Lykilorð (minnst 8 stafir)" style="'+inp+'"></div>'+
+      '<div class="acts"><button class="btn pri" data-m="go">Skrá inn</button><button class="btn" data-m="later">Seinna</button></div><p id="mmsg" class="note" style="margin-top:8px">Fyrsta skipti: sláðu inn netfang og veldu þér lykilorð – aðgangur er þá stofnaður sjálfkrafa.</p></div>';
+    w.addEventListener('click', async e=>{
+      const b=e.target.closest('[data-m]'); if(!b) return;
+      if(b.dataset.m==='later'){ LS('cf.sb.later', String(Date.now())); w.remove(); render(); return; }
+      const em=(document.getElementById('mmail').value||'').trim(), pw=document.getElementById('mpw').value||'', m=document.getElementById('mmsg');
+      if(!em || pw.length<8){ m.textContent='Sláðu inn netfang og lykilorð (minnst 8 stafir).'; return; }
+      b.disabled=true; m.textContent='Augnablik…';
+      try{
+        try{ await login(em,pw); }
+        catch(err){
+          if(/confirm/i.test(err.message||'')) throw err;
+          if(!/invalid/i.test(err.message||'')) throw err;
+          const r = await signup(em,pw);
+          if(r!=='in'){ m.innerHTML='Aðgangur stofnaður. <b>Opnaðu staðfestingarpóstinn</b> sem var sendur á '+esc(em)+' og smelltu á hlekkinn (villusíða sem opnast er í lagi). Komdu svo aftur og ýttu á „Skrá inn“.'; b.disabled=false; return; }
+        }
+        w.remove(); render(); sync(true);
+      }catch(err){
+        b.disabled=false;
+        m.textContent = err.name==='AbortError' ? 'Ekkert samband við gagnagrunninn – reyndu aftur þegar netið er komið.' :
+          /confirm/i.test(err.message||'') ? 'Netfangið er ekki staðfest enn – smelltu á hlekkinn í staðfestingarpóstinum og reyndu svo aftur.' :
+          /already|registered|invalid/i.test(err.message||'') ? 'Rangt lykilorð fyrir þetta netfang.' : (err.message||'Villa');
+      }
+    });
+    document.body.appendChild(w);
+  }
 })();
 </script>
 </head><body>
