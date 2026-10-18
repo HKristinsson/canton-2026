@@ -435,6 +435,8 @@ section[role=tabpanel]{display:grid;gap:14px}
 .row{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:start;padding:12px 12px 12px 14px;cursor:pointer}
 .booth{font-family:var(--f-mono);font-weight:600;font-size:14px;background:var(--surface2);border:1px solid var(--line);border-radius:6px;padding:3px 7px;white-space:nowrap;min-width:78px;text-align:center}
 .booth.none{color:var(--muted);font-weight:500}
+.loc{font-family:var(--f-mono);font-size:12px;font-weight:700;border-radius:6px;padding:2px 6px;white-space:nowrap;color:#fff;background:var(--no)}
+.loc.p1{background:#C2410C}.loc.p2{background:#1F5F8B}.loc.p3{background:#7A837E}
 .lc{display:flex;flex-direction:column;align-items:center;gap:6px;width:80px}
 .logo{width:80px;height:60px;padding:2px;box-sizing:border-box;border-radius:10px;border:1px solid var(--line);background:#fff;object-fit:contain;display:block}
 .logo.ini{display:grid;place-items:center;font-weight:700;font-size:18px;color:var(--muted);background:var(--surface2);letter-spacing:.5px}
@@ -721,6 +723,19 @@ function makerTag(d){
   if(/imp\.?\s*&\s*exp|import\s*&\s*export|trading|trade co|milliliður|trader/.test(m)) return '<span class="tag red">Hugsanl. milliliður</span>';
   return '';
 }
+function areaOf(h){ return h<=8?'A':h<=13?'B':h<=16?'C':'D'; }
+function locs(d){
+  if(d.status!=='opinbert' || !d.booth) return [];
+  const out=[], seen=new Set();
+  for(const tok of String(d.booth).split('·')){
+    const m=/(\d{1,2})\.(\d)\s*[A-Z]\s*\d/.exec(tok); if(!m) continue;
+    const pm=/\(P(\d)\)/.exec(tok); const ph = pm? +pm[1] : (d.phase||'');
+    const k=ph+'|'+areaOf(+m[1]); if(seen.has(k)) continue; seen.add(k);
+    out.push({ph, ar:areaOf(+m[1]), hall:m[1]+'.'+m[2], b:tok.replace(/\(.*?\)/g,'').trim()});
+  }
+  return out;
+}
+function locPills(d){ return locs(d).map(l=>'<span class="loc p'+l.ph+'">P'+l.ph+' · '+l.ar+'</span>').join(''); }
 function firstBooth(d){ if(d.status!=='opinbert') return ''; return (d.booth||'').split(/ ·|\(/)[0].trim(); }
 const DAYPH={'16':1,'17':1,'18':1,'19':1,'23':2,'24':2,'25':2};
 function eff(d){
@@ -744,7 +759,7 @@ function card(d0, opts={}){
   let h = '<article class="card '+cls+'" data-id="'+d.id+'">';
   h += '<div class="row" data-toggle="'+d.id+'" role="button" tabindex="0" aria-expanded="'+isOpen+'">';
   h += '<div class="lc">'+(d.logo?'<img class="logo" src="'+d.logo+'" alt="Merki '+esc(d.company_en)+'" loading="lazy">':'<span class="logo ini" aria-hidden="true">'+esc(ini(d.company_en))+'</span>');
-  h += '<span class="booth'+(fb?'':' none')+'">'+(fb?esc(fb):'—')+'</span></div>';
+  h += '<span class="booth'+(fb?'':' none')+'">'+(fb?esc(fb):'—')+'</span>'+locPills(d)+'</div>';
   h += '<div class="nm"><h3>'+esc(d.company_en)+'</h3><p class="p">'+esc(d.is)+'</p>';
   h += '<div class="tags"><span class="tag">'+esc(CATS[d.cat])+'</span>'+statusTag(d)+euTag(d)+makerTag(d)+(d.gd?'<span class="tag">Guangdong</span>':'')+'</div></div>';
   h += '<div class="side"><span class="prio '+d.priority+'" title="Forgangur '+d.priority+'">'+d.priority+'</span>';
@@ -764,7 +779,7 @@ function detail(d, st){
     h+='<div class="ovbox"><h4>Staðfest á sýningu?</h4><p class="note">Ef birgirinn staðfestir bás, skráðu básinn og daginn og hann færist inn í leiðina og á kortið.</p><div class="ovrow"><input type="text" id="ob-'+d.id+'" placeholder="Bás, t.d. 12.1K38" value="'+esc(st.ob||'')+'" autocapitalize="characters"><select id="od-'+d.id+'">'+opts.map(([k,v])=>'<option value="'+k+'"'+((st.od||'')===k?' selected':'')+'>'+v+'</option>').join('')+'</select></div><div class="acts" style="margin-top:6px"><button class="btn pri" data-ovset="'+d.id+'">'+(d._ov?'Uppfæra':'Færa í leið')+'</button>'+(d._ov?'<button class="btn" data-ovclr="'+d.id+'">Taka úr leið</button>':'')+'<span class="saved" id="ov-'+d.id+'"></span></div></div>';
   }
   h+='<div><h4>Vörur</h4><p>'+esc(d.products)+'</p></div>';
-  if(d.booth && d.status==='opinbert') h+='<div><h4>Bás</h4><p style="font-family:var(--f-mono)">'+esc(d.booth)+'</p></div>';
+  if(d.booth && d.status==='opinbert'){ const L=locs(d); h+='<div><h4>Bás</h4>'+(L.length? '<ul style="margin:0;padding-left:18px">'+L.map(l=>'<li><span style="font-family:var(--f-mono);font-weight:600">'+esc(l.b)+'</span> · Phase '+l.ph+' · Svæði '+l.ar+' · Salur '+esc(l.hall)+'</li>').join('')+'</ul>' : '<p style="font-family:var(--f-mono)">'+esc(d.booth)+'</p>')+'</div>'; }
   if(d.booth_questions && d.booth_questions.length){
     const A=st.a||{};
     h+='<div><h4>Spurningar á básnum</h4><ol class="qs">'+d.booth_questions.map((q,i)=>{const v=A[i]||''; return '<li class="q'+(v?' ans':'')+'"><span class="qt">'+esc(q)+'</span><span class="yn"><button class="ynb y" data-q="'+d.id+'" data-i="'+i+'" data-v="y" aria-pressed="'+(v==='y')+'">Já</button><button class="ynb n" data-q="'+d.id+'" data-i="'+i+'" data-v="n" aria-pressed="'+(v==='n')+'">Nei</button></span></li>';}).join('')+'</ol></div>';
