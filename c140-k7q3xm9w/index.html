@@ -436,6 +436,7 @@ section[role=tabpanel]{display:grid;gap:14px}
 .booth{font-family:var(--f-mono);font-weight:600;font-size:14px;background:var(--surface2);border:1px solid var(--line);border-radius:6px;padding:3px 7px;white-space:nowrap;min-width:78px;text-align:center}
 .booth.none{color:var(--muted);font-weight:500}
 .zonehead{margin:14px 0 2px;padding:8px 12px;border-radius:10px;background:var(--ink);color:var(--bg);font-family:var(--f-display);font-weight:800;font-size:18px}.zonehead small{font-family:var(--f-body);font-weight:600;font-size:13px;opacity:.75;margin-left:6px}
+.zb{display:inline-block;font-weight:800;font-size:12px;color:#fff;border-radius:6px;padding:1px 7px;margin-right:2px;vertical-align:1px}.zb.zA{background:#7C3AED}.zb.zB{background:#0F766E}.zb.zC{background:#B45309}.zb.zD{background:#BE185D}
 .where{font-size:15px;margin:2px 0 4px;color:var(--ink)} .where b{font-weight:800;white-space:nowrap} .where .wp{font-family:var(--f-mono);font-size:12px;color:var(--muted)}
 .loc{font-family:var(--f-mono);font-size:12px;font-weight:700;border-radius:6px;padding:2px 6px;white-space:nowrap;color:#fff;background:var(--no)}
 .loc.p1{background:#C2410C}.loc.p2{background:#1F5F8B}.loc.p3{background:#7A837E}
@@ -579,6 +580,7 @@ details.mapdet .mapbox{border:0;border-top:1px solid var(--line);border-radius:0
       <input type="search" id="q" placeholder="Leita: fyrirtæki, vara, bás…" aria-label="Leita">
       <div class="chips" id="fcat"></div>
       <div class="chips" id="fstat"></div>
+      <div class="chips" id="fzone"></div>
       <div class="count" id="allcount"></div>
     </div>
     <div id="alllist" class="list"></div>
@@ -748,8 +750,9 @@ function whereLine(d){
   return String(d.booth).split('·').map(tok=>{ const m=/(\d{1,2})\.(\d)\s*([A-Z]\s*[\d\-]+)/.exec(tok); if(!m) return '';
     const pm=/\(P(\d)\)/.exec(tok); const ph=pm?+pm[1]:(d.phase||'');
     const fl = m[2]==='0' ? 'úti' : m[2]+'. hæð';
-    return '<div class="where"><b>Hús '+m[1]+'</b> · '+fl+' · <b>Bás '+esc(m[3].replace(/\s+/g,''))+'</b> <span class="wp">P'+ph+'·'+areaOf(+m[1])+'</span></div>'; }).join('');
+    return '<div class="where"><span class="zb z'+areaOf(+m[1])+'">Svæði '+areaOf(+m[1])+'</span> <b>Hús '+m[1]+'</b> · '+fl+' · <b>Bás '+esc(m[3].replace(/\s+/g,''))+'</b> <span class="wp">P'+ph+'</span></div>'; }).join('');
 }
+function zoneKey(d){ if(d.status!=='opinbert'||!d.booth) return null; const m=/(\d{1,2})\.(\d)\s*([A-Z])\s*(\d+)/.exec(d.booth); if(!m) return null; return [areaOf(+m[1]),+m[1],+m[2],m[3],+m[4]]; }
 function locPills(d){ return locs(d).map(l=>'<span class="loc p'+l.ph+'">P'+l.ph+' · '+l.ar+'</span>').join(''); }
 function firstBooth(d){ if(d.status!=='opinbert') return ''; return (d.booth||'').split(/ ·|\(/)[0].trim(); }
 const DAYPH={'16':1,'17':1,'18':1,'19':1,'23':2,'24':2,'25':2};
@@ -858,16 +861,19 @@ function renderRoute(){
   $('#routelist').innerHTML=h;
 }
 
-let fCat='', fStat='';
+let fCat='', fStat='', fZone='', fSort='zone';
 function renderFilters(){
   $('#fcat').innerHTML = '<button class="chip" data-fcat="" aria-pressed="'+(fCat==='')+'">Allir flokkar</button>'+Object.entries(CATS).map(([k,v])=>'<button class="chip" data-fcat="'+k+'" aria-pressed="'+(fCat===k)+'">'+esc(v)+'</button>').join('');
   const S=[['','Allir'],['on','Á sýningu (140)'],['off','Ekki á sýningu'],['A','Forgangur A'],['euok','✔ ESB-vottað'],['eu','ESB vottað eða að hluta'],['open','Óheimsótt']];
+  $('#fzone').innerHTML = '<button class="chip" data-fzone="" aria-pressed="'+(fZone==='')+'">Öll svæði</button>'+['A','B','C','D'].map(z=>'<button class="chip" data-fzone="'+z+'" aria-pressed="'+(fZone===z)+'">Svæði '+z+'</button>').join('')+
+    '<span style="width:8px"></span><button class="chip" data-fsort="zone" aria-pressed="'+(fSort==='zone')+'">Raða: svæði/hús</button><button class="chip" data-fsort="cat" aria-pressed="'+(fSort==='cat')+'">Raða: flokkur</button>';
   $('#fstat').innerHTML = S.map(([k,v])=>'<button class="chip" data-fstat="'+k+'" aria-pressed="'+(fStat===k)+'">'+v+'</button>').join('');
 }
 function renderAll(){
   const q = ($('#q').value||'').toLowerCase().trim();
   let items = V().filter(d=>{
     if(fCat && d.cat!==fCat) return false;
+    if(fZone && !(d.status==='opinbert' && zoneKey(d) && zoneKey(d)[0]===fZone)) return false;
     if(fStat==='on' && !(d.status==='opinbert' && d.phase!==3)) return false;
     if(fStat==='off' && d.status==='opinbert' && d.phase!==3) return false;
     if(fStat==='A' && d.priority!=='A') return false;
@@ -877,7 +883,7 @@ function renderAll(){
     if(q){ const t=(d.company_en+' '+d.company_cn+' '+d.is+' '+d.products+' '+d.booth+' '+d.notes+' '+CATS[d.cat]).toLowerCase(); if(!t.includes(q)) return false; }
     return true;
   });
-  items.sort((a,b)=> a.cat.localeCompare(b.cat) || a.priority.localeCompare(b.priority) || a.company_en.localeCompare(b.company_en));
+  if(fSort==='zone') items.sort((a,b)=>{ const ka=zoneKey(a)||['Z',999,0,'',0], kb=zoneKey(b)||['Z',999,0,'',0]; for(let i=0;i<5;i++){ if(ka[i]<kb[i]) return -1; if(ka[i]>kb[i]) return 1; } return a.company_en.localeCompare(b.company_en); }); else items.sort((a,b)=> a.cat.localeCompare(b.cat) || a.priority.localeCompare(b.priority) || a.company_en.localeCompare(b.company_en));
   $('#allcount').textContent = items.length+' af '+DATA.length+' birgjum';
   $('#alllist').innerHTML = items.length? items.map(d=>card(d)).join('') : '<div class="empty">Ekkert passar við leitina.</div>';
 }
@@ -921,6 +927,8 @@ document.addEventListener('click', e=>{
   }
   if(t.dataset.day){ curDay=t.dataset.day; mapZoom='day'; try{localStorage.setItem('cf.day2',curDay)}catch(e){} renderDays(); renderRoute(); renderMap(); return; }
   if(t.dataset.fcat!==undefined){ fCat=t.dataset.fcat; renderFilters(); renderAll(); return; }
+  if(t.dataset.fzone!==undefined){ fZone=t.dataset.fzone; renderFilters(); renderAll(); return; }
+  if(t.dataset.fsort!==undefined){ fSort=t.dataset.fsort; renderFilters(); renderAll(); return; }
   if(t.dataset.fstat!==undefined){ fStat=t.dataset.fstat; renderFilters(); renderAll(); return; }
   if(t.dataset.visit){ e.stopPropagation(); const id=t.dataset.visit; const cur=(state[id]||{}).s; const nv = cur==='v'?'':'v'; if(nv==='v') open.add(id); setState(id,{s:nv}); if(nv==='v'){ setTimeout(()=>{const ta=document.getElementById('n-'+id); if(ta){ ta.scrollIntoView({block:'center',behavior:'smooth'}); ta.focus({preventScroll:true}); }},60);} return; }
   if(t.dataset.ovset){ e.stopPropagation(); const id=t.dataset.ovset; const b=(document.getElementById('ob-'+id).value||'').trim().toUpperCase().replace(/\s+/g,''); const dd=document.getElementById('od-'+id).value; const msg=document.getElementById('ov-'+id);
